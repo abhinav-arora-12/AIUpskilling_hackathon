@@ -8,11 +8,36 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+
+def _load_dotenv(path: Path) -> None:
+    """Minimal .env loader (no extra dependency). Existing environment variables win."""
+    if not path.exists():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_dotenv(ROOT / ".env")
+
 # Models (design.md D6, D7). Local models run without an API key.
 EMBED_MODEL = "BAAI/bge-large-en-v1.5"
 RERANK_MODEL = "BAAI/bge-reranker-v2-m3-int8"
-TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL", "claude-haiku-5-5")
-GENERATION_MODEL = os.environ.get("GENERATION_MODEL", "claude-sonnet-5-5")
+TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL", "claude-haiku-5-5")  # Anthropic alternative only
+GENERATION_MODEL = os.environ.get("GENERATION_MODEL", "claude-sonnet-5-5")  # Anthropic alternative only
+# OpenRouter models (design.md D25). Verified against the account: Sonnet 5.5 and Haiku 5.5 answer;
+# Grok models and Opus 5.5 are blocked by the account's guardrails (design.md D29).
+OPENROUTER_GENERATION_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-5.5")
+OPENROUTER_TRIAGE_MODEL = os.environ.get("OPENROUTER_TRIAGE_MODEL", "anthropic/claude-haiku-5.5")
+# USD per token, from https://openrouter.ai/api/v1/models (pricing.prompt / pricing.completion).
+OPENROUTER_PRICES = {
+    "anthropic/claude-sonnet-5.5": (0.000002, 0.00001),
+    "anthropic/claude-haiku-5.5": (0.0000001, 0.0000005),
+    "x-ai/grok-4.3": (0.00000125, 0.0000025),
+}
 
 # Retrieval parameters (brief Gate 3)
 BM25_K1 = 1.25
@@ -37,6 +62,11 @@ BUDGET_RERANK_MS = 45
 BUDGET_LOOP_TOTAL_MS = 450
 BUDGET_LOOP_STEP_MS = 120
 BUDGET_E2E_P95_MS = 450
+
+# Bulkhead pools (brief Gate 9): a slow server cannot starve health checks or triage.
+RAG_POOL = 64
+DB_POOL = 128
+LLM_POOL = 256
 
 # Loop limits (brief Gate 4)
 MAX_LOOP_ITERATIONS = 5
@@ -73,6 +103,7 @@ class Paths:
 
 @dataclass
 class Settings:
+    openrouter_api_key: str | None = field(default_factory=lambda: os.environ.get("OPENROUTER_API_KEY") or None)
     anthropic_api_key: str | None = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY") or None)
     default_tenant: str = field(default_factory=lambda: os.environ.get("DEFAULT_TENANT_ID", "tenant_a"))
 

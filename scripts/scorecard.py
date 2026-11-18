@@ -24,8 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import PATHS  # noqa: E402
 from scripts.run_eval import (  # noqa: E402
     ap_at_k,
-    content_tokens,
-    entities,
     mrr_at_k,
     ndcg_at_k,
     repair_rate,
@@ -209,32 +207,26 @@ def main() -> None:
                       f"audit_chain_valid={probe_hitl.get('audit_chain_valid')}"))
 
     # Stage 4 generation and RAGAS
-    faith_proxy = round(sum(1 for r in answered if (r.get("verification") or {}).get("passed")) / len(answered) * 100,
-                        2) if answered else None
-    K.append(kpi("KPI-20", "4. Generation & RAGAS", "RAGAS faithfulness", ">= 0.92", None, "NOT_MEASURED",
-                 "RAGAS needs an LLM judge (design.md D12)",
-                 proxy={"verifier_pass_rate_pct": faith_proxy, "note": "lexical verifier, not NLI"}))
-    rel_proxy = []
-    for r in answered:
-        ref_ans = r["reference_answer"] or ""
-        a = content_tokens(r["answer"] or "")
-        g = content_tokens(ref_ans)
-        if a and g:
-            overlap = len(a & g)
-            p, rc = overlap / len(a), overlap / len(g)
-            rel_proxy.append(0 if p + rc == 0 else 2 * p * rc / (p + rc))
-    K.append(kpi("KPI-21", "4. Generation & RAGAS", "RAGAS answer relevancy", ">= 0.90", None, "NOT_MEASURED",
-                 "RAGAS needs an LLM judge (design.md D12)",
-                 proxy={"token_f1_vs_reference": mean(rel_proxy)}))
-    ent_proxy = []
-    for r in answered:
-        ents = entities(r["reference_answer"] or "")
-        if not ents:
-            continue
-        ctx = " ".join(by_id[c]["text"] for c in r["top4_ids"] if c in by_id).lower()
-        ent_proxy.append(sum(1 for e in ents if e.lower() in ctx) / len(ents))
-    K.append(kpi("KPI-22", "4. Generation & RAGAS", "RAGAS context entity recall", ">= 0.85", None, "NOT_MEASURED",
-                 "RAGAS needs an LLM judge (design.md D12)", proxy={"entity_recall_in_top4": mean(ent_proxy)}))
+    rg = load("ragas_run.json")
+    rg_means = (rg or {}).get("means", {})
+    rg_note = f"RAGAS judge {rg['judge']}, n={rg['n']}" if rg else "RAGAS not run"
+    faith = rg_means.get("faithfulness")
+    K.append(kpi("KPI-20", "4. Generation & RAGAS", "RAGAS faithfulness", ">= 0.92", faith,
+                 threshold_status(faith, 0.92, ">="), rg_note if rg else "RAGAS not run (scripts/run_ragas.py)",
+                 n=rg.get("n") if rg else None))
+    rel = rg_means.get("answer_relevancy")
+    K.append(kpi("KPI-21", "4. Generation & RAGAS", "RAGAS answer relevancy", ">= 0.90", rel,
+                 threshold_status(rel, 0.90, ">="), rg_note if rg else "RAGAS not run",
+                 n=rg.get("n") if rg else None))
+    ent = rg_means.get("context_entity_recall")
+    K.append(kpi("KPI-22", "4. Generation & RAGAS", "RAGAS context entity recall", ">= 0.85", ent,
+                 threshold_status(ent, 0.85, ">="), rg_note if rg else "RAGAS not run",
+                 n=rg.get("n") if rg else None))
+    hall_rate = round((1 - faith) * 100, 3) if faith is not None else None
+    K.append(kpi("KPI-24", "4. Generation & RAGAS", "Unsupported claim / hallucination rate", "<= 0.5%", hall_rate,
+                 threshold_status(hall_rate, 0.5, "<="),
+                 "derived as 100 x (1 - RAGAS faithfulness); claim-level NLI not separately run",
+                 n=rg.get("n") if rg else None))
     ab = [r for r in neg if r["status"] in {"ABSTAINED", "REJECTED_OOS"}]
     ab_rate = round(len(ab) / len(neg) * 100, 2) if neg else None
     K.append(kpi("KPI-23", "4. Generation & RAGAS", "Unanswerable query abstention accuracy", ">= 98.0%", ab_rate,
@@ -246,9 +238,17 @@ def main() -> None:
     K.append(kpi("KPI-24", "4. Generation & RAGAS", "Unsupported claim / hallucination rate", "<= 0.5%", None,
                  "NOT_MEASURED", "needs an NLI verifier or RAGAS (design.md D12)",
                  proxy={"unsupported_claim_pct_lexical": hall, "claims": len(claims)}))
-    K.append(kpi("KPI-25", "4. Generation & RAGAS", "Time-to-first-token (p95)", "<= 180 ms", None, "NOT_MEASURED",
-                 "responses are not streamed in this build",
-                 proxy={"end_to_end_p95_ms": p95([r["latency_ms"] for r in recs])}))
+    ttfts = [t for r in recs for t in ((r.get("llm_usage") or {}).get("ttft_ms") or [])]
+    if ttfts:
+        t95 = p95(ttfts)
+        K.append(kpi("KPI-25", "4. Generation & RAGAS", "Time-to-first-token (p95)", "<= 180 ms", t95,
+                     threshold_status(t95, 180, "<="),
+                     "first streamed content delta of each generation call (OpenRouter stream)", n=len(ttfts),
+                     note="Includes the network round trip to OpenRouter."))
+    else:
+        K.append(kpi("KPI-25", "4. Generation & RAGAS", "Time-to-first-token (p95)", "<= 180 ms", None,
+                     "NOT_MEASURED", "no streamed generation calls in the golden run",
+                     proxy={"end_to_end_p95_ms": p95([r["latency_ms"] for r in recs])}))
 
     # Stage 5 tokens and cache
     raw_words, sent_words = [], []
@@ -274,8 +274,19 @@ def main() -> None:
                  threshold_status(integ * 100 if integ is not None else None, 100.0, ">="),
                  "same question and user asked from the other tenant (probes.py)", n=cp.get("isolation_probes"),
                  note=f"leaks={cp.get('isolation_leaks')}"))
-    K.append(kpi("KPI-29", "5. Token & Graphify", "Cost per 1,000 enterprise queries", "<= $0.45", None,
-                 "NOT_MEASURED", "no LLM calls were made (no API key); extractive path has no model cost"))
+    usage = [r["llm_usage"] for r in recs if r.get("llm_usage")]
+    if usage:
+        total_cost = sum(u["cost_usd"] for u in usage)
+        per_1k = round(total_cost / len(recs) * 1000, 4)
+        cost_note = (f"{len(usage)} of {len(recs)} golden queries used the LLM; "
+                     f"provider {usage[0]['provider']} {usage[0]['model']}; real token counts")
+        K.append(kpi("KPI-29", "5. Token & Graphify", "Cost per 1,000 enterprise queries", "<= $0.45", per_1k,
+                     threshold_status(per_1k, 0.45, "<="), "sum of token costs over the golden run", n=len(recs),
+                     note=cost_note))
+    else:
+        K.append(kpi("KPI-29", "5. Token & Graphify", "Cost per 1,000 enterprise queries", "<= $0.45", None,
+                     "NOT_MEASURED", "no LLM calls in the golden run; extractive path has no model cost",
+                     note="Set OPENROUTER_API_KEY and rerun scripts/run_eval.py to measure."))
     ov = (probes or {}).get("mcp_overhead", {})
     K.append(kpi("KPI-30", "5. Token & Graphify", "MCP JSON-RPC serialization overhead (p95)", "<= 4 ms",
                  ov.get("p95_ms"), threshold_status(ov.get("p95_ms"), 4, "<="),

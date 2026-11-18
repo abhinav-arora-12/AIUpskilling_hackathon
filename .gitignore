@@ -22,9 +22,14 @@ data/state.sqlite3*
 data/traces.jsonl
 
 # Documents and local tooling (not part of the repo)
-docs/
+docs/*
+!docs/workflow.dot
+!docs/workflow_orchestration.png
 *.docx
 .claude/
 .vscode/
 .idea/
 .DS_Store
+
+# Signing keys: never commit
+data/keys/

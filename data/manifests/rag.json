@@ -1,0 +1,11 @@
+{
+  "server": "rag",
+  "module": "mcp_servers.rag_server",
+  "sha256": "9637a2681abb8eb404d8771483b2d4ce76a4c2932ce3f8711435e1c47e8a51ca",
+  "tools": [
+    "hybrid_retrieve",
+    "chunk"
+  ],
+  "version": "0.1.0",
+  "signature": "955fecc562e9f4e4618eee6d8637572e32ad7598934eef0b9bc9a47bfbbf7102"
+}

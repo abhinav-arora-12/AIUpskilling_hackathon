@@ -6,6 +6,7 @@ Bounded loop: states INIT -> TRIAGE -> REASONING -> TOOL_CALL -> OBSERVATION -> 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -17,7 +18,9 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from app import config as C
+from app import llm
 from app.agent import generate as G
+from app.agent.generate import Draft  # noqa: F401  (type reference for readers)
 from app.agent.harness import (
     CircuitBreaker,
     HarnessError,
@@ -29,8 +32,9 @@ from app.agent.harness import (
     repair_sku,
     validate_transaction,
 )
-from app.agent.triage import LOT_ID, SKU_ID, TriageResult, classify
-from app.cache.semantic import SemanticCache
+from app.agent.subagents import ExecutionSubagent, RetrievalSubagent, VerificationSubagent
+from app.agent.triage import LOT_ID, SKU_ID, TRIAGE_SYSTEM, TriageResult, classify, parse_llm_triage
+from app.cache.semantic import make_cache
 from app.plugins.hooks import run_pre_hooks, scan_chunks
 from app.telemetry import Trace, new_trace_id
 
@@ -59,25 +63,43 @@ class MCPHub:
         "graph": "mcp_servers.graphify_server",
     }
 
+    # Bulkhead pool sizes per brief Gate 9. A slow server cannot starve the others.
+    POOLS = {"rag": C.RAG_POOL, "state": C.DB_POOL, "graph": C.RAG_POOL}
+
     def __init__(self):
         self._stack = AsyncExitStack()
+        self._bulkheads = {name: asyncio.Semaphore(size) for name, size in self.POOLS.items()}
         self.sessions: dict[str, ClientSession] = {}
         self.status: dict[str, str] = {}
 
     async def start(self) -> None:
+        from app.manifests import verify  # refuse to start a server whose manifest does not verify
+
+        for name in self.SERVERS:
+            verify(name)
         for name, module in self.SERVERS.items():
-            params = StdioServerParameters(command=sys.executable, args=["-m", module], cwd=str(C.ROOT))
-            read, write = await self._stack.enter_async_context(stdio_client(params))
+            if name == "state" and os.environ.get("STATE_MCP_URL"):
+                # State store as a separate Streamable HTTP service (design.md D21).
+                from mcp.client.streamable_http import streamablehttp_client
+
+                read, write, _ = await self._stack.enter_async_context(
+                    streamablehttp_client(os.environ["STATE_MCP_URL"]))
+                transport = "streamable-http"
+            else:
+                params = StdioServerParameters(command=sys.executable, args=["-m", module], cwd=str(C.ROOT))
+                read, write = await self._stack.enter_async_context(stdio_client(params))
+                transport = "stdio"
             session = await self._stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
             self.sessions[name] = session
-            self.status[name] = "connected"
+            self.status[name] = f"connected ({transport})"
 
     async def stop(self) -> None:
         await self._stack.aclose()
 
     async def call(self, server: str, tool: str, args: dict) -> dict:
-        result = await self.sessions[server].call_tool(tool, args)
+        async with self._bulkheads[server]:
+            result = await self.sessions[server].call_tool(tool, args)
         text = "".join(getattr(c, "text", "") for c in result.content)
         try:
             return json.loads(text)
@@ -115,12 +137,28 @@ class LoopState:
         return True
 
 
+def _count_llm(out: dict, res: llm.LLMResult) -> None:
+    """Accumulate token usage per request (KPI-29 uses these real counts)."""
+    u = out.setdefault("llm_usage", {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0,
+                                     "provider": res.provider, "model": res.model})
+    u["calls"] += 1
+    u["input_tokens"] += res.input_tokens
+    u["output_tokens"] += res.output_tokens
+    u["cost_usd"] = round(u["cost_usd"] + res.cost_usd, 8)
+    if res.ttft_ms is not None:
+        u.setdefault("ttft_ms", []).append(res.ttft_ms)
+
+
 class Gateway:
-    def __init__(self, hub: MCPHub | None = None, cache: SemanticCache | None = None):
+    def __init__(self, hub: MCPHub | None = None, cache=None):
         self.hub = hub or MCPHub()
-        self.cache = cache or SemanticCache()
+        self.cache = cache or make_cache()
+        self._llm_bulkhead = asyncio.Semaphore(C.LLM_POOL)
         self.breaker = CircuitBreaker()
         self.turns: dict[str, list[str]] = {}  # sliding window of last 3 turns per session (Gate 5)
+        self.retrieval = RetrievalSubagent(self._tool)
+        self.execution = ExecutionSubagent(self._tool)
+        self.verification = VerificationSubagent(self._tool)
 
     async def start(self) -> None:
         await self.hub.start()
@@ -192,6 +230,17 @@ class Gateway:
         # 3. Triage
         with trace.span("triage.classify") as attrs:
             t = classify(clean)
+            if t.confidence < 0.6 and llm.provider() is not None:  # low confidence: ask the LLM
+                try:
+                    res = llm.chat(TRIAGE_SYSTEM, clean, model=C.OPENROUTER_TRIAGE_MODEL, max_tokens=80,
+                                   temperature=0.0)
+                    _count_llm(out, res)
+                    refined = parse_llm_triage(res.text, clean)
+                    if refined is not None:
+                        t = refined
+                    attrs["llm_used"] = refined is not None
+                except llm.LLMError as exc:
+                    attrs["llm_error"] = str(exc)[:120]
             attrs.update({"route": t.route, "risk_tier": t.risk_tier, "confidence": t.confidence,
                           "intent": t.intent})
         loop.goto("TRIAGE")
@@ -231,7 +280,7 @@ class Gateway:
                                 reason=exc.code)
         loop.goto("TOOL_CALL")
         with trace.span("mcp.state", tool="approval_create") as attrs:
-            res = await self._tool("state", "approval_create", {
+            res = await self.execution.invoke("state", "approval_create", {
                 "tenant_id": tenant_id, "requested_by": user_id, "action": result.args["action"],
                 "args_json": json.dumps(result.args, sort_keys=True), "idempotency_key": key,
             })
@@ -257,7 +306,7 @@ class Gateway:
         step_t0 = time.perf_counter()
         with trace.span("agent.react.step", step=loop.steps, tool="hybrid_retrieve") as attrs:
             args = {"query": clean, "tenant_id": tenant_id}
-            res = await self._tool("rag", "hybrid_retrieve", args)
+            res = await self.retrieval.invoke("rag", "hybrid_retrieve", args)
             attrs["error"] = res.get("error")
         step_ms = (time.perf_counter() - step_t0) * 1000
         if step_ms > C.BUDGET_LOOP_STEP_MS:  # soft budget unless ENFORCE_TIME_BUDGETS (design.md D20)
@@ -303,12 +352,16 @@ class Gateway:
         # REASONING: generate. LLM if configured, extractive otherwise or on any LLM failure.
         loop.goto("REASONING")
         draft = None
-        with trace.span("llm.generate", generator_requested="llm" if C.SETTINGS.anthropic_api_key else "extractive") as attrs:
-            if C.SETTINGS.anthropic_api_key:
+        with trace.span("llm.generate", generator_requested="llm" if llm.provider() else "extractive") as attrs:
+            if llm.provider() is not None:
                 try:
-                    draft = G.llm_draft(clean, cands, C.SETTINGS.anthropic_api_key)
-                except Exception as exc:  # FMEA: LLM error or 429 -> deterministic fallback
-                    attrs["llm_error"] = type(exc).__name__
+                    anchor = self._goal_anchor(clean, tenant_id, session_id)
+                    async with self._llm_bulkhead:
+                        draft, res = G.llm_draft(clean, cands, anchor=anchor)
+                    _count_llm(out, res)
+                except llm.LLMError as exc:  # FMEA: LLM error or 429 -> deterministic fallback
+                    attrs["llm_error"] = str(exc)[:120]
+                    draft = None
             if draft is None or not draft.answer:
                 draft = G.extractive(clean, cands)
             attrs["generator"] = draft.generator
@@ -337,7 +390,7 @@ class Gateway:
 
         # Store verified facts (dual memory, Gate 5) and cache the answer (tenant + user scoped)
         if draft.sentences:
-            await self._tool("state", "session_fact_put", {
+            await self.verification.invoke("state", "session_fact_put", {
                 "tenant_id": tenant_id, "session_id": session_id, "key": "last_verified_claim",
                 "value": draft.sentences[0]["text"][:2000], "verified_by_chunk_id": draft.sentences[0]["chunk_id"],
             })
@@ -349,7 +402,21 @@ class Gateway:
         del turns[:-C.SLIDING_WINDOW_TURNS]
         return response
 
-    def _record_stage_spans(self, trace: Trace, res: dict) -> None:
+    def _goal_anchor(self, query: str, tenant_id: str, session_id: str) -> str:
+        """Immutable GoalAnchorBlock (brief Gate 5). Placed first in every generation prompt."""
+        # The current query is appended after generation, so the last W-1 stored turns are the prior turns.
+        recent = self.turns.get(session_id, [])[-(C.SLIDING_WINDOW_TURNS - 1):]
+        lines = [
+            "GoalAnchorBlock (immutable):",
+            f"- original_intent: {query}",
+            f"- tenant: {tenant_id}",
+            "- policy_constraints: answer only from sources; cite every claim; abstain if unsupported; "
+            "never request or perform state changes.",
+            f"- recent_turns: {json.dumps(recent)}",
+        ]
+        return "\n".join(lines)
+
+    def _record_stage_spans(self, trace: Trace, res: dict) -> None:  # noqa: D401
         timings = res.get("timings_ms", {})
         for span, key in (("mcp.rag.bm25", "bm25_ms"), ("mcp.rag.biencoder", "dense_ms"),
                           ("mcp.rag.rrf", "rrf_ms"), ("mcp.rag.rerank", "rerank_ms")):

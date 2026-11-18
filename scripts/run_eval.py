@@ -112,6 +112,7 @@ async def run(limit: int | None) -> dict:
                 "wall_ms": round(wall, 1), "steps": res["loop"]["steps"],
                 "timings_ms": r.get("timings_ms", {}), "verification": res.get("verification"),
                 "dropped_chunks": res.get("dropped_chunks", []),
+                "llm_usage": res.get("llm_usage"),
             }
             records.append(rec)
             print(f"{it['item_id']} {it['stratum']:9s} {res['status']:12s} {res['latency_ms']:8.0f} ms",

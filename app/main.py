@@ -137,9 +137,12 @@ async def kpi():
 async def metrics():
     gw = await get_gateway()
     s = gw.cache.stats()
+    from app.telemetry import prometheus_lines
+
     lines = [
         "# TYPE cache_hits_total counter", f"cache_hits_total {s['hits']}",
         "# TYPE cache_misses_total counter", f"cache_misses_total {s['misses']}",
         "# TYPE cache_entries gauge", f"cache_entries {s['entries']}",
+        *prometheus_lines(),
     ]
     return "\n".join(lines) + "\n"

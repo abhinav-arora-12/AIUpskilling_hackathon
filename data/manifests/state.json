@@ -1,0 +1,15 @@
+{
+  "server": "state",
+  "module": "mcp_servers.state_server",
+  "sha256": "713c98aab8b603965cf16a91e8a28e73982e5c93e1f142ae45a19f21af6a2af2",
+  "tools": [
+    "session_facts_get",
+    "session_fact_put",
+    "approval_create",
+    "approval_list",
+    "approval_decide",
+    "audit_list"
+  ],
+  "version": "0.1.0",
+  "signature": "494f65a6ac9691b99555b853c9780f6f6b2021adf0c39412a2b82ebf8e9c8e90"
+}

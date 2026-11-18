@@ -10,6 +10,7 @@ In-process by default. Redis is not implemented in this build (see design.md D5 
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import threading
 import time
@@ -100,3 +101,73 @@ class SemanticCache:
         with self._lock:
             self._entries.clear()
             self.hits = self.misses = 0
+
+
+class RedisSemanticCache:
+    """Same contract as SemanticCache, backed by Redis (design.md D5, D31).
+
+    Keys: ua:cache:{tenant}:{user}:{sha}. Semantic matching scans only the caller's own prefix,
+    so one tenant or user can never match another's entries. Redis TTL carries the jittered expiry.
+    """
+
+    def __init__(self, url: str, threshold: float = C.CACHE_SEMANTIC_THRESHOLD, rng=None):
+        import redis
+
+        self.r = redis.Redis.from_url(url, decode_responses=True)
+        self.threshold = threshold
+        self._rng = rng or random.Random()
+        self.hits = 0
+        self.misses = 0
+
+    @staticmethod
+    def _prefix(tenant_id: str, user_id: str) -> str:
+        return f"ua:cache:{tenant_id}:{user_id}:"
+
+    def _ttl(self) -> int:
+        return int(C.CACHE_TTL_S + self._rng.uniform(-C.CACHE_TTL_JITTER_S, C.CACHE_TTL_JITTER_S))
+
+    def get(self, tenant_id: str, user_id: str, query: str, qvec: np.ndarray):
+        prefix = self._prefix(tenant_id, user_id)
+        exact_key = prefix + cache_key(tenant_id, user_id, query)
+        raw = self.r.get(exact_key)
+        if raw is not None:
+            entry = json.loads(raw)
+            self.hits += 1
+            return {**entry["payload"], "cache_similarity": 1.0, "cache_key": exact_key}
+        best, best_sim = None, -1.0
+        for key in self.r.scan_iter(match=prefix + "*", count=500):
+            entry = json.loads(self.r.get(key) or "null") or {}
+            if not entry:
+                continue
+            sim = float(np.dot(np.array(entry["vector"], dtype="float32"), qvec))
+            if sim > best_sim:
+                best, best_sim = (key, entry), sim
+        if best is not None and best_sim >= self.threshold:
+            self.hits += 1
+            return {**best[1]["payload"], "cache_similarity": round(best_sim, 4), "cache_key": best[0]}
+        self.misses += 1
+        return None
+
+    def put(self, tenant_id: str, user_id: str, query: str, qvec: np.ndarray, payload: dict) -> str:
+        key = self._prefix(tenant_id, user_id) + cache_key(tenant_id, user_id, query)
+        body = {"query": query, "vector": [float(x) for x in qvec], "payload": payload}
+        self.r.set(key, json.dumps(body), ex=self._ttl())
+        return key
+
+    def stats(self) -> dict:
+        total = self.hits + self.misses
+        return {"entries": int(self.r.dbsize()), "hits": self.hits, "misses": self.misses,
+                "hit_ratio": round(self.hits / total, 4) if total else 0.0}
+
+    def clear(self) -> None:
+        for key in self.r.scan_iter(match="ua:cache:*", count=500):
+            self.r.delete(key)
+        self.hits = self.misses = 0
+
+
+def make_cache():
+    """Redis when REDIS_URL is set, otherwise the in-process cache."""
+    import os
+
+    url = os.environ.get("REDIS_URL")
+    return RedisSemanticCache(url) if url else SemanticCache()

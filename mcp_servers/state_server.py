@@ -103,4 +103,12 @@ def audit_list(tenant_id: TenantId, limit: Annotated[int, Field(ge=1, le=500)] =
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    import os
+
+    # stdio by default. Set MCP_STATE_TRANSPORT=streamable-http to serve on STATE_MCP_PORT (design.md D21).
+    if os.environ.get("MCP_STATE_TRANSPORT") == "streamable-http":
+        mcp.settings.host = "127.0.0.1"
+        mcp.settings.port = int(os.environ.get("STATE_MCP_PORT", "8081"))
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run(transport="stdio")

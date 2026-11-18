@@ -22,15 +22,15 @@ We are building an enterprise-grade, MCP-based agentic RAG assistant that answer
 ## 3. Tech Stack
 - Python 3.11 (pinned), managed with `uv`.
 - FastAPI + Uvicorn (async). [TO CONFIRM versions]
-- MCP Python SDK (`mcp`): JSON-RPC 2.0 over stdio (local) and Streamable HTTP (service).
+- MCP Python SDK (`mcp>=1.2,<2`, FastMCP v1 API): JSON-RPC 2.0 over stdio (all three servers, D21).
 - Pydantic v2 for all tool and API models.
-- Retrieval: rank-bm25, FAISS (CPU), BGE-large-en-v1.5 (ONNX), bge-reranker-v2-m3 (ONNX, FP16/INT8).
+- Retrieval: rank-bm25 (BM25Okapi), nltk (Porter stemmer), FAISS (CPU, HNSW), BGE-large-en-v1.5 and bge-reranker-v2-m3 INT8 via `fastembed` (ONNX Runtime, no torch).
 - ONNX Runtime.
 - Storage: PostgreSQL + pgvector, Redis. [ASSUMPTION] SQLite is the fallback. The brief mentions both.
 - Plugins: pluggy.
 - Observability: OpenTelemetry SDK → OTel Collector → Prometheus, Tempo, Grafana.
 - Evaluation: ragas.
-- LLM provider: [TO CONFIRM]. Assumed Anthropic API. Triage uses `claude-haiku-5-5` at temperature 0.0. Generation uses `claude-sonnet-5-5`. RAGAS judge [TO CONFIRM].
+- LLM provider: OpenRouter. Generation `anthropic/claude-sonnet-5.5`, triage `anthropic/claude-haiku-5.5` (design.md D25, D29). Optional Anthropic alternative. The LLM never creates Tier 3 requests (D26).
 - UI: Streamlit. Diagram: `graphviz` Python package plus the Graphviz binary.
 - Load testing: k6 and JMeter. [TO CONFIRM] whether JMeter is required on the demo machine.
 - Knowledge graph: Graphify CLI [TO CONFIRM it is available]. Vault notes are Obsidian-flavored Markdown.

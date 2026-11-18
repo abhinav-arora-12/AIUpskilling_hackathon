@@ -1,0 +1,84 @@
+// Gate 2: orchestration workflow. Render with:
+//   dot -Tpng -Gdpi=300 docs/workflow.dot -o docs/workflow_orchestration.png
+digraph workflow {
+    graph [rankdir=TB, fontname="Helvetica", fontsize=14, pad=0.4, nodesep=0.35, ranksep=0.6,
+           label="The Unreliable Assistant: Orchestration Workflow", labelloc=t, newrank=true];
+    node  [shape=box, style="rounded,filled", fillcolor="#F4F6F8", color="#5B6770",
+           fontname="Helvetica", fontsize=11, margin="0.15,0.08"];
+    edge  [fontname="Helvetica", fontsize=9, color="#5B6770", arrowsize=0.7];
+
+    subgraph cluster_ingress {
+        label="1. Ingress & Security Layer"; style="rounded,filled"; fillcolor="#E3ECF7"; color="#8FA9C8";
+        ingress [label="Ingress\nPOST /api/v1/agent/query"];
+        pii     [label="PII Redactor\n(pre-hook, fail closed)"];
+        inj     [label="Injection Classifier\n(pre-hook, fail closed)"];
+        cache   [label="Redis Semantic Cache Check\ntenant-scoped, cosine >= 0.92", shape=cylinder, fillcolor="#FFF4DC"];
+    }
+
+    subgraph cluster_triage {
+        label="2. Triage & Subagent Routing"; style="rounded,filled"; fillcolor="#E8F5E9"; color="#8DBF95";
+        triage [label="Triage Agent\ntemperature = 0.0, <= 25 ms", fillcolor="#C8E6C9"];
+        direct [label="Direct Response"];
+        retr   [label="Retrieval Subagent\nread-only"];
+        exec   [label="Execution Subagent\nTier 3 mutations"];
+        audit  [label="Verification Subagent\n(audit log, RAGAS triad)"];
+        reject [label="REJECT_OOS\npolite refusal"];
+    }
+
+    subgraph cluster_rag {
+        label="3. MCP & 3-Stage Hybrid RAG Pipeline"; style="rounded,filled"; fillcolor="#F3E8FD"; color="#B39DDB";
+        rag    [label="mcp-hybrid-rag\nJSON-RPC 2.0 (stdio)", fillcolor="#E1BEE7"];
+        bm25   [label="Stage 1: BM25\nk1=1.25, b=0.75, top 50"];
+        bi     [label="Stage 2: Bi-Encoder + FAISS\nbge-large, top 50"];
+        rrf    [label="RRF Fusion\nk=60, pool 40"];
+        ce     [label="Stage 3: Cross-Encoder\nbge-reranker-v2-m3, rerank_k=4"];
+        graphify [label="mcp-graphify-vault\nJSON-RPC 2.0, depth <= 2", fillcolor="#E1BEE7"];
+        state  [label="mcp-state-store\nJSON-RPC 2.0 (Streamable HTTP)", fillcolor="#E1BEE7"];
+    }
+
+    subgraph cluster_control {
+        label="4. Control Plane & Egress"; style="rounded,filled"; fillcolor="#FDECEA"; color="#E39A93";
+        react   [label="Bounded ReAct Loop\nmax_steps = 5, 450 ms budget"];
+        breaker [label="Circuit Breaker\n2 identical failures -> HALTED_BREAKER", fillcolor="#FFCDD2"];
+        hitl    [label="Tier 3 HITL Gate\nPENDING_APPROVAL", fillcolor="#FFCDD2"];
+        post    [label="Post-Execution\nRAGAS & OTel Export"];
+        egress  [label="Response\nstatus + citations + trace_id", shape=oval, fillcolor="#FFFFFF"];
+    }
+
+    // Ingress path
+    ingress -> pii -> inj -> cache;
+    cache -> post [label="hit: skip LLM", style=dashed];
+    cache -> triage [label="miss"];
+
+    // Triage routing
+    triage -> direct [label="DIRECT_ANSWER"];
+    triage -> retr   [label="HYBRID_RAG"];
+    triage -> exec   [label="TRANSACTION_EXEC"];
+    triage -> audit  [label="verify path"];
+    triage -> reject [label="REJECT_OOS"];
+
+    // RAG pipeline
+    retr -> rag      [label="JSON-RPC"];
+    retr -> graphify [label="1-2 hop subgraph"];
+    rag -> bm25;
+    rag -> bi;
+    bm25 -> rrf;
+    bi -> rrf;
+    rrf -> ce;
+    ce -> react      [label="top 4 chunks"];
+
+    // Control plane
+    direct -> react;
+    react -> breaker [label="each tool call"];
+    graphify -> react [style=dotted];
+    react -> audit   [label="draft answer"];
+    audit -> post;
+    exec -> state    [label="JSON-RPC"];
+    exec -> hitl;
+    hitl -> state    [style=dotted, label="decision"];
+    hitl -> post;
+    breaker -> post  [label="halt or continue"];
+    react -> post    [label="answered or abstained"];
+    reject -> egress;
+    post -> egress;
+}

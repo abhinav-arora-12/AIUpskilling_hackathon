@@ -24,7 +24,7 @@ OOS = re.compile(
     r"football|cricket score|election|celebrity)\b",
     re.I,
 )
-GREETING = re.compile(r"^\s*(hi|hello|hey|thanks|thank you|good (morning|afternoon|evening))\b[\s!.?]*$", re.I)
+GREETING = re.compile(r"^\s*((hi|hello|hey)( there)?|thanks|thank you|good (morning|afternoon|evening))\b[\s!.?]*$", re.I)
 META = re.compile(r"\b(what can you do|who are you|help me use|how do you work)\b", re.I)
 DOMAIN_HINTS = [
     ("quality", re.compile(r"\b(lot|batch|qa|safety|release|excursion)\b", re.I)),
@@ -87,3 +87,42 @@ def classify(query: str, llm_fallback=None) -> TriageResult:
         if refined is not None:
             return refined
     return result
+
+
+TRIAGE_SYSTEM = (
+    "You route user questions for a policy assistant. Reply with JSON only, no prose: "
+    '{"intent": string, "route": "DIRECT_ANSWER" | "HYBRID_RAG" | "REJECT_OOS", '
+    '"domain": string, "risk_tier": 1 | 2}. '
+    "DIRECT_ANSWER: greetings and questions about the assistant. "
+    "HYBRID_RAG: questions about policies or procedures. "
+    "REJECT_OOS: anything unrelated to operations policy. "
+    "Never choose any other route."
+)
+# The model may never start a Tier 3 request. TRANSACTION_EXEC stays rules-only (design.md D26).
+LLM_ALLOWED_ROUTES = frozenset({"DIRECT_ANSWER", "HYBRID_RAG", "REJECT_OOS"})
+
+
+def parse_llm_triage(text: str, query: str) -> TriageResult | None:
+    """Parse the model's JSON. Anything unexpected returns None, and the rules result is kept."""
+    import json
+
+    try:
+        data = json.loads(text.strip().strip("`"))
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    route = data.get("route")
+    if route not in LLM_ALLOWED_ROUTES:
+        return None
+    tier = data.get("risk_tier", 1)
+    if tier not in (1, 2):
+        tier = 1
+    domain = data.get("domain") if data.get("domain") in {n for n, _ in DOMAIN_HINTS} | {"general"} else _domain(query)
+    return TriageResult(
+        intent=str(data.get("intent", "llm"))[:40],
+        domain=domain,
+        risk_tier=tier,
+        complexity="low",
+        route=route,
+        confidence=0.7,
+        source="llm",
+    )
