@@ -79,8 +79,12 @@ def main() -> None:
                LLMContextPrecisionWithReference(llm=llm), LLMContextRecall(llm=llm),
                ContextEntityRecall(llm=llm)]
     t0 = time.time()
+    from ragas.run_config import RunConfig
+
+    # Judge calls are network-bound, so more parallel workers shorten the run without changing results.
+    run_cfg = RunConfig(max_workers=32, timeout=120, max_retries=3)
     result = evaluate(EvaluationDataset.from_list(rows), metrics=metrics, raise_exceptions=False,
-                      show_progress=False)
+                      show_progress=False, run_config=run_cfg)
     df = result.to_pandas()
     per_item = []
     for i, item_id in enumerate(meta):

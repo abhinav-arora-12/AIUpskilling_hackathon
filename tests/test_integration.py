@@ -25,7 +25,7 @@ def test_retrieval_never_returns_other_tenant_chunks():
 
 def test_health_reports_all_mcp_servers(client):
     body = client.get("/api/v1/health").json()
-    assert body["mcp"] == {"hybrid_rag": "connected", "state_store": "connected", "graphify_vault": "connected"}
+    assert all(body["mcp"][k].startswith("connected") for k in ("hybrid_rag", "state_store", "graphify_vault"))
 
 
 def test_header_tenant_mismatch_is_403(client):

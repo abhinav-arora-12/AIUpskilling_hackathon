@@ -9,7 +9,7 @@ from app.state_store import StateError, StateStore
 
 @pytest.fixture()
 def store(tmp_path):
-    return StateStore(tmp_path / "t.sqlite3")
+    return StateStore(tmp_path / "t.sqlite3", dsn="")  # explicit SQLite so .env POSTGRES_DSN is not used
 
 
 def new_req(store, tenant="tenant_a", by="operator-7", action="lot.release", args=None):

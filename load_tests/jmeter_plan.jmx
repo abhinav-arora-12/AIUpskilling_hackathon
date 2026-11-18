@@ -6,7 +6,7 @@
 -->
 <jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6">
   <hashTree>
-    <TestPlan testname="Unreliable Assistant query load" enabled="true">
+    <TestPlan testname="Unreliable Assistant query load" enabled="true" guiclass="TestPlanGui" testclass="TestPlan">
       <stringProp name="TestPlan.comments">Scaled run, one tenant per run (-JTENANT). Thresholds: duration 600 ms, HTTP 200, valid status.</stringProp>
       <boolProp name="TestPlan.functional_mode">false</boolProp>
       <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" enabled="true">
@@ -14,7 +14,7 @@
       </elementProp>
     </TestPlan>
     <hashTree>
-      <ThreadGroup testname="Query users" enabled="true">
+      <ThreadGroup testname="Query users" enabled="true" guiclass="ThreadGroupGui" testclass="ThreadGroup">
         <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
         <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" enabled="true">
           <boolProp name="LoopController.continue_forever">false</boolProp>
@@ -27,11 +27,11 @@
         <stringProp name="ThreadGroup.delay"></stringProp>
       </ThreadGroup>
       <hashTree>
-        <ConstantTimer testname="Think time 1 s" enabled="true">
+        <ConstantTimer testname="Think time 1 s" enabled="true" guiclass="ConstantTimerGui" testclass="ConstantTimer">
           <stringProp name="ConstantTimer.delay">1000</stringProp>
         </ConstantTimer>
         <hashTree/>
-        <HTTPSamplerProxy testname="POST agent query" enabled="true">
+        <HTTPSamplerProxy testname="POST agent query" enabled="true" guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy">
           <stringProp name="HTTPSampler.domain">${__P(HOST,127.0.0.1)}</stringProp>
           <stringProp name="HTTPSampler.port">${__P(PORT,8000)}</stringProp>
           <stringProp name="HTTPSampler.path">/api/v1/agent/query</stringProp>
@@ -41,7 +41,7 @@
             <collectionProp name="Arguments.arguments">
               <elementProp name="" elementType="HTTPArgument">
                 <boolProp name="HTTPArgument.always_encode">false</boolProp>
-                <stringProp name="Argument.value">{"tenant_id":"${TENANT}","user_id":"user_${__threadNum}","query":"Verify batch LOT-88392 safety protocol and return triage status ${__Random(1,20)}"}</stringProp>
+                <stringProp name="Argument.value">{"tenant_id":"${__P(TENANT,tenant_a)}","user_id":"user_${__threadNum}","query":"Verify batch LOT-88392 safety protocol and return triage status ${__Random(1,20)}"}</stringProp>
                 <stringProp name="Argument.metadata">=</stringProp>
               </elementProp>
             </collectionProp>
@@ -50,7 +50,7 @@
           <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
         </HTTPSamplerProxy>
         <hashTree>
-          <HeaderManager testname="Headers" enabled="true">
+          <HeaderManager testname="Headers" enabled="true" guiclass="HeaderPanel" testclass="HeaderManager">
             <collectionProp name="HeaderManager.headers">
               <elementProp name="" elementType="Header">
                 <stringProp name="Header.name">Content-Type</stringProp>
@@ -58,16 +58,16 @@
               </elementProp>
               <elementProp name="" elementType="Header">
                 <stringProp name="Header.name">X-Tenant-ID</stringProp>
-                <stringProp name="Header.value">${TENANT}</stringProp>
+                <stringProp name="Header.value">${__P(TENANT,tenant_a)}</stringProp>
               </elementProp>
             </collectionProp>
           </HeaderManager>
           <hashTree/>
-          <DurationAssertion testname="Duration 600 ms" enabled="true">
+          <DurationAssertion testname="Duration 600 ms" enabled="true" guiclass="DurationAssertionGui" testclass="DurationAssertion">
             <stringProp name="DurationAssertion.duration">600</stringProp>
           </DurationAssertion>
           <hashTree/>
-          <JSONPathAssertion testname="Status is ANSWERED or ABSTAINED or PENDING" enabled="true">
+          <JSONPathAssertion testname="Status is ANSWERED or ABSTAINED or PENDING" enabled="true" guiclass="JSONPathAssertionGui" testclass="JSONPathAssertion">
             <stringProp name="JSON_PATH">$.status</stringProp>
             <stringProp name="EXPECTED_VALUE">ANSWERED|ABSTAINED|PENDING_APPROVAL|BLOCKED|REJECTED_OOS</stringProp>
             <boolProp name="JSONVALIDATION">true</boolProp>
@@ -76,7 +76,7 @@
             <boolProp name="ISREGEX">true</boolProp>
           </JSONPathAssertion>
           <hashTree/>
-          <ResponseAssertion testname="HTTP 200" enabled="true">
+          <ResponseAssertion testname="HTTP 200" enabled="true" guiclass="AssertionGui" testclass="ResponseAssertion">
             <collectionProp name="Asserion.test_strings">
               <stringProp name="49586">200</stringProp>
             </collectionProp>
@@ -86,7 +86,7 @@
           </ResponseAssertion>
           <hashTree/>
         </hashTree>
-        <ResultCollector testname="Summary report" enabled="true">
+        <ResultCollector testname="Summary report" enabled="true" guiclass="SummaryReport" testclass="ResultCollector">
           <boolProp name="ResultCollector.error_logging">false</boolProp>
           <objProp>
             <name>saveConfig</name>

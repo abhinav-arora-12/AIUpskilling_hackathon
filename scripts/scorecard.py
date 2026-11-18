@@ -235,9 +235,6 @@ def main() -> None:
     claims = [c for r in answered for c in ((r.get("verification") or {}).get("claims") or [])]
     if claims:
         hall = round(sum(1 for c in claims if not c["supported"]) / len(claims) * 100, 3)
-    K.append(kpi("KPI-24", "4. Generation & RAGAS", "Unsupported claim / hallucination rate", "<= 0.5%", None,
-                 "NOT_MEASURED", "needs an NLI verifier or RAGAS (design.md D12)",
-                 proxy={"unsupported_claim_pct_lexical": hall, "claims": len(claims)}))
     ttfts = [t for r in recs for t in ((r.get("llm_usage") or {}).get("ttft_ms") or [])]
     if ttfts:
         t95 = p95(ttfts)
