@@ -1,0 +1,30 @@
+# Secrets: never commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Generated artifacts
+*.faiss
+*.index
+graph.json
+dashboard_50k/
+results_*.jtl
+data/index/
+data/results/
+data/state.sqlite3*
+data/traces.jsonl
+
+# Documents and local tooling (not part of the repo)
+docs/
+*.docx
+.claude/
+.vscode/
+.idea/
+.DS_Store

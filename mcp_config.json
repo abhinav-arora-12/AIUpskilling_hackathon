@@ -1,0 +1,15 @@
+{
+  "_comment": "Descriptive registration. The gateway (app/agent/gateway.py MCPHub) starts these servers over stdio with the same module paths. Values here match the running code.",
+  "mcpServers": {
+    "hybrid-rag": {"command": "python", "args": ["-m", "mcp_servers.rag_server"], "transport": "stdio", "timeout_ms": 150},
+    "state-store": {"command": "python", "args": ["-m", "mcp_servers.state_server"], "transport": "stdio", "note": "design.md D21: stdio, not Streamable HTTP"},
+    "graphify-vault": {"command": "python", "args": ["-m", "mcp_servers.graphify_server"], "transport": "stdio"}
+  },
+  "plugins": [
+    {"name": "pii_redactor", "stage": "PRE_EXECUTION", "priority": 10, "fail_closed": true},
+    {"name": "injection_shield", "stage": "PRE_EXECUTION", "priority": 20, "fail_closed": true},
+    {"name": "circuit_breaker", "stage": "TOOL_DISPATCH", "priority": 10, "max_identical_calls": 2},
+    {"name": "verifier", "stage": "POST_EXECUTION", "priority": 10, "min_overlap": 0.5, "note": "lexical, design.md D22"},
+    {"name": "telemetry", "stage": "ALL_SPANS", "sink": "data/traces.jsonl", "note": "OTel export is not wired (S2)"}
+  ]
+}
